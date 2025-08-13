@@ -2,12 +2,16 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +68,12 @@ type CloudDashboard struct {
 	connectionsMu   sync.Mutex
 	connections     map[*websocket.Conn]*ConnectionClient
 	upgrader        websocket.Upgrader
+	// Authentication
+	dashboardUser   string
+	dashboardPass   string
+	apiKey          string
+	sessions        map[string]time.Time
+	sessionsMu      sync.Mutex
 }
 
 type ConnectionClient struct {
@@ -77,6 +87,44 @@ type WebSocketMessage struct {
 	Data interface{} `json:"data"`
 	ID   string      `json:"id,omitempty"`
 }
+
+var loginTpl = template.Must(template.New("login").Parse(`
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>NinjaTrader Login</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body { background: #f8f9fa; }
+.login-container { max-width: 400px; margin: 100px auto; }
+.card { box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+</style>
+</head>
+<body>
+<div class="login-container">
+    <div class="card">
+        <div class="card-body">
+            <h4 class="card-title text-center mb-4">NinjaTrader Dashboard</h4>
+            {{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}
+            <form method="POST" action="/login">
+                <div class="mb-3">
+                    <label for="username" class="form-label">Username</label>
+                    <input type="text" class="form-control" id="username" name="username" required>
+                </div>
+                <div class="mb-3">
+                    <label for="password" class="form-label">Password</label>
+                    <input type="password" class="form-control" id="password" name="password" required>
+                </div>
+                <button type="submit" class="btn btn-primary w-100">Login</button>
+            </form>
+        </div>
+    </div>
+</div>
+</body>
+</html>
+`))
 
 var tpl = template.Must(template.New("dash").Parse(`
 <!doctype html>
@@ -123,7 +171,10 @@ body.dark-mode .table-success-custom { background-color: rgba(25, 135, 84, 0.3) 
 <div class="container py-4">
     <div class="d-flex justify-content-between align-items-center">
         <h3>NinjaTrader Cloud Dashboard (Railway)</h3>
-        <div class="form-check form-switch"><input class="form-check-input" type="checkbox" role="switch" id="darkModeToggle"><label class="form-check-label" for="darkModeToggle">Dark Mode</label></div>
+        <div class="d-flex align-items-center gap-3">
+            <div class="form-check form-switch"><input class="form-check-input" type="checkbox" role="switch" id="darkModeToggle"><label class="form-check-label" for="darkModeToggle">Dark Mode</label></div>
+            <a href="/logout" class="btn btn-outline-secondary btn-sm">Logout</a>
+        </div>
     </div>
     <div id="accounts" class="mt-3"></div>
     <div class="mt-4"><button id="flattenAll" class="btn btn-danger" data-action="flatten-all">Emergency Flatten (ALL Accounts)</button></div>
@@ -241,16 +292,42 @@ function render(data) {
 `))
 
 func NewCloudDashboard() *CloudDashboard {
+	// Get auth credentials from environment
+	dashUser := os.Getenv("DASHBOARD_USER")
+	if dashUser == "" {
+		dashUser = "admin"
+	}
+	dashPass := os.Getenv("DASHBOARD_PASS") 
+	if dashPass == "" {
+		dashPass = "ninja123" // Default password - change this!
+	}
+	apiKey := os.Getenv("API_KEY")
+	if apiKey == "" {
+		apiKey = generateRandomKey()
+		log.Printf("Generated API Key: %s", apiKey)
+		log.Printf("Set API_KEY environment variable to: %s", apiKey)
+	}
+
 	return &CloudDashboard{
-		latest:      make(map[string]Snapshot),
-		webClients:  make(map[chan []byte]bool),
-		connections: make(map[*websocket.Conn]*ConnectionClient),
+		latest:        make(map[string]Snapshot),
+		webClients:    make(map[chan []byte]bool),
+		connections:   make(map[*websocket.Conn]*ConnectionClient),
+		sessions:      make(map[string]time.Time),
+		dashboardUser: dashUser,
+		dashboardPass: dashPass,
+		apiKey:        apiKey,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
-				return true // Allow all origins in development
+				return true // Allow all origins
 			},
 		},
 	}
+}
+
+func generateRandomKey() string {
+	bytes := make([]byte, 32)
+	rand.Read(bytes)
+	return base64.URLEncoding.EncodeToString(bytes)
 }
 
 func (cd *CloudDashboard) Start() {
@@ -259,20 +336,128 @@ func (cd *CloudDashboard) Start() {
 		port = "8081"
 	}
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { tpl.Execute(w, nil) })
-	http.HandleFunc("/events", cd.eventsHandler)
+	// Authentication routes
+	http.HandleFunc("/login", cd.loginHandler)
+	http.HandleFunc("/logout", cd.logoutHandler)
+	
+	// Protected routes
+	http.HandleFunc("/", cd.requireAuth(func(w http.ResponseWriter, r *http.Request) { tpl.Execute(w, nil) }))
+	http.HandleFunc("/events", cd.requireAuth(cd.eventsHandler))
+	http.HandleFunc("/api/flatten", cd.requireAuth(cd.commandHandler("flatten_all")))
+	http.HandleFunc("/api/flatten_account", cd.requireAuth(cd.accountCommandHandler("flatten_account")))
+	http.HandleFunc("/api/close_position", cd.requireAuth(cd.instrumentCommandHandler("close_position")))
+	http.HandleFunc("/api/cancel_order", cd.requireAuth(cd.orderCommandHandler("cancel_order")))
+	
+	// WebSocket with API key auth
 	http.HandleFunc("/ws", cd.websocketHandler)
-	http.HandleFunc("/api/flatten", cd.commandHandler("flatten_all"))
-	http.HandleFunc("/api/flatten_account", cd.accountCommandHandler("flatten_account"))
-	http.HandleFunc("/api/close_position", cd.instrumentCommandHandler("close_position"))
-	http.HandleFunc("/api/cancel_order", cd.orderCommandHandler("cancel_order"))
 
 	log.Printf("Starting Cloud Dashboard on :%s", port)
 	log.Printf("Dashboard: http://localhost:%s", port)
+	log.Printf("Default login: %s / %s", cd.dashboardUser, cd.dashboardPass)
 	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, nil))
 }
 
+// Authentication middleware
+func (cd *CloudDashboard) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sessionCookie, err := r.Cookie("session")
+		if err != nil {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+
+		cd.sessionsMu.Lock()
+		sessionTime, exists := cd.sessions[sessionCookie.Value]
+		cd.sessionsMu.Unlock()
+
+		if !exists || time.Since(sessionTime) > 24*time.Hour {
+			// Session expired
+			cd.sessionsMu.Lock()
+			delete(cd.sessions, sessionCookie.Value)
+			cd.sessionsMu.Unlock()
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+
+		// Update session time
+		cd.sessionsMu.Lock()
+		cd.sessions[sessionCookie.Value] = time.Now()
+		cd.sessionsMu.Unlock()
+
+		next(w, r)
+	}
+}
+
+func (cd *CloudDashboard) loginHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		loginTpl.Execute(w, nil)
+		return
+	}
+
+	if r.Method == "POST" {
+		username := r.FormValue("username")
+		password := r.FormValue("password")
+
+		// Constant-time comparison to prevent timing attacks
+		usernameOK := subtle.ConstantTimeCompare([]byte(username), []byte(cd.dashboardUser)) == 1
+		passwordOK := subtle.ConstantTimeCompare([]byte(password), []byte(cd.dashboardPass)) == 1
+
+		if usernameOK && passwordOK {
+			// Create session
+			sessionID := generateRandomKey()
+			cd.sessionsMu.Lock()
+			cd.sessions[sessionID] = time.Now()
+			cd.sessionsMu.Unlock()
+
+			// Set cookie
+			http.SetCookie(w, &http.Cookie{
+				Name:     "session",
+				Value:    sessionID,
+				Path:     "/",
+				HttpOnly: true,
+				Secure:   strings.HasPrefix(r.Header.Get("X-Forwarded-Proto"), "https"),
+				SameSite: http.SameSiteLaxMode,
+			})
+
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+
+		// Invalid credentials
+		loginTpl.Execute(w, map[string]string{"Error": "Invalid username or password"})
+		return
+	}
+}
+
+func (cd *CloudDashboard) logoutHandler(w http.ResponseWriter, r *http.Request) {
+	sessionCookie, err := r.Cookie("session")
+	if err == nil {
+		cd.sessionsMu.Lock()
+		delete(cd.sessions, sessionCookie.Value)
+		cd.sessionsMu.Unlock()
+	}
+
+	// Clear cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session",
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Now().Add(-time.Hour),
+		HttpOnly: true,
+	})
+
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
 func (cd *CloudDashboard) websocketHandler(w http.ResponseWriter, r *http.Request) {
+	// Check API key for WebSocket connections (connection servers)
+	apiKey := r.Header.Get("Authorization")
+	expectedAuth := "Bearer " + cd.apiKey
+	if subtle.ConstantTimeCompare([]byte(apiKey), []byte(expectedAuth)) != 1 {
+		log.Printf("WebSocket unauthorized: expected %s, got %s", expectedAuth, apiKey)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 	conn, err := cd.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade error: %v", err)

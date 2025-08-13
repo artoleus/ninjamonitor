@@ -66,6 +66,7 @@ type ConnectionServer struct {
 	wsConnMu        sync.Mutex
 	reconnectChan   chan struct{}
 	cloudURL        string
+	apiKey          string
 	incomingDir     string
 	commandChan     chan Command
 	isConnected     bool
@@ -79,6 +80,11 @@ func NewConnectionServer() *ConnectionServer {
 		cloudURL = "ws://localhost:8081/ws"
 	}
 
+	apiKey := os.Getenv("API_KEY")
+	if apiKey == "" {
+		log.Fatal("API_KEY environment variable is required")
+	}
+
 	incoming := os.Getenv("NT_INCOMING")
 	if incoming == "" {
 		home, _ := os.UserHomeDir()
@@ -88,6 +94,7 @@ func NewConnectionServer() *ConnectionServer {
 	return &ConnectionServer{
 		latest:        make(map[string]Snapshot),
 		cloudURL:      cloudURL,
+		apiKey:        apiKey,
 		incomingDir:   incoming,
 		commandChan:   make(chan Command, 100), // Buffered channel to prevent blocking
 		reconnectChan: make(chan struct{}, 1),
@@ -215,7 +222,11 @@ func (cs *ConnectionServer) connectToCloud() {
 		return
 	}
 
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	// Set API key header for authentication
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+cs.apiKey)
+	
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), headers)
 	if err != nil {
 		log.Printf("Failed to connect to cloud: %v", err)
 		cs.scheduleReconnect()
