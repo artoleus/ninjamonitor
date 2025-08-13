@@ -1,0 +1,27 @@
+# Dockerfile.cloudrun - Cloud dashboard for Google Cloud Run (without ZeroTier)
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cloud-dashboard.go .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o cloud-dashboard cloud-dashboard.go
+
+FROM alpine:latest
+
+# Install basic packages
+RUN apk add --no-cache ca-certificates && \
+    rm -rf /var/cache/apk/*
+
+WORKDIR /app
+
+# Copy binary
+COPY --from=builder /app/cloud-dashboard .
+RUN chmod +x cloud-dashboard
+
+# Expose port (Cloud Run will override with PORT env var)
+EXPOSE 8081
+
+# Run the application directly (no ZeroTier)
+CMD ["./cloud-dashboard"]
