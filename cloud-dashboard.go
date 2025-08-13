@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/csrf"
 	"github.com/gorilla/websocket"
 )
 
@@ -72,6 +73,7 @@ type CloudDashboard struct {
 	dashboardUser   string
 	dashboardPass   string
 	apiSecretToken  string
+	csrfAuthKey     []byte
 	sessions        map[string]time.Time
 	sessionsMu      sync.Mutex
 }
@@ -133,6 +135,7 @@ var tpl = template.Must(template.New("dash").Parse(`
 <meta charset="utf-8">
 <title>NT8 Remote Dashboard</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="csrf-token" content="{{.CSRFToken}}">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
 <style>
@@ -204,7 +207,15 @@ async function sendCommand(url, body) {
     const msg = body.account ? 'Action: ' + url + '\nDetails: ' + JSON.stringify(body) : 'FLATTEN EVERYTHING?';
     if (!confirm('Are you sure?\n\n' + msg)) return;
     try {
-        const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+		const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        const resp = await fetch(url, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'X-CSRF-Token': csrfToken
+			},
+			body: JSON.stringify(body)
+		});
         if (!resp.ok) alert('Failed to send command: ' + resp.statusText);
     } catch (err) { alert('Error sending command: ' + err.message); }
 }
@@ -293,13 +304,20 @@ function render(data) {
 
 func NewCloudDashboard() *CloudDashboard {
 	// Get auth credentials from environment
+	csrfKey := []byte(os.Getenv("CSRF_AUTH_KEY"))
+	if len(csrfKey) != 32 {
+		log.Println("WARNING: CSRF_AUTH_KEY is not set or not 32 bytes. Generating a random key for this session.")
+		csrfKey = make([]byte, 32)
+		rand.Read(csrfKey)
+	}
+
 	dashUser := os.Getenv("DASHBOARD_USER")
 	if dashUser == "" {
 		dashUser = "admin"
 	}
-	dashPass := os.Getenv("DASHBOARD_PASS") 
+	dashPass := os.Getenv("DASHBOARD_PASS")
 	if dashPass == "" {
-		dashPass = "ninja123" // Default password - change this!
+		log.Fatal("FATAL: DASHBOARD_PASS environment variable is not set. Please set a strong password for the dashboard user.")
 	}
 	apiSecretToken := os.Getenv("API_SECRET_TOKEN")
 	if apiSecretToken == "" {
@@ -316,6 +334,7 @@ func NewCloudDashboard() *CloudDashboard {
 		dashboardUser: dashUser,
 		dashboardPass: dashPass,
 		apiSecretToken: apiSecretToken,
+		csrfAuthKey:   csrfKey,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // Allow all origins
@@ -336,25 +355,55 @@ func (cd *CloudDashboard) Start() {
 		port = "8081"
 	}
 
+	go cd.cleanupExpiredSessions(1 * time.Hour)
+
+	mux := http.NewServeMux()
 	// Authentication routes
-	http.HandleFunc("/login", cd.loginHandler)
-	http.HandleFunc("/logout", cd.logoutHandler)
-	
+	mux.HandleFunc("/login", cd.loginHandler)
+	mux.HandleFunc("/logout", cd.logoutHandler)
+
 	// Protected routes
-	http.HandleFunc("/", cd.requireAuth(func(w http.ResponseWriter, r *http.Request) { tpl.Execute(w, nil) }))
-	http.HandleFunc("/events", cd.requireAuth(cd.eventsHandler))
-	http.HandleFunc("/api/flatten", cd.requireAuth(cd.commandHandler("flatten_all")))
-	http.HandleFunc("/api/flatten_account", cd.requireAuth(cd.accountCommandHandler("flatten_account")))
-	http.HandleFunc("/api/close_position", cd.requireAuth(cd.instrumentCommandHandler("close_position")))
-	http.HandleFunc("/api/cancel_order", cd.requireAuth(cd.orderCommandHandler("cancel_order")))
-	
-	// WebSocket with API key auth
-	http.HandleFunc("/ws", cd.websocketHandler)
+	mux.HandleFunc("/", cd.requireAuth(cd.dashboardHandler))
+	mux.HandleFunc("/events", cd.requireAuth(cd.eventsHandler))
+	mux.HandleFunc("/api/flatten", cd.requireAuth(cd.commandHandler("flatten_all")))
+	mux.HandleFunc("/api/flatten_account", cd.requireAuth(cd.accountCommandHandler("flatten_account")))
+	mux.HandleFunc("/api/close_position", cd.requireAuth(cd.instrumentCommandHandler("close_position")))
+	mux.HandleFunc("/api/cancel_order", cd.requireAuth(cd.orderCommandHandler("cancel_order")))
+
+	// WebSocket with API key auth (CSRF protection is not needed for WebSockets)
+	mux.HandleFunc("/ws", cd.websocketHandler)
+
+	// CSRF Middleware
+	isSecure := os.Getenv("ENV") == "production" // A simple way to detect production
+	csrfMiddleware := csrf.Protect(cd.csrfAuthKey, csrf.Secure(isSecure))
 
 	log.Printf("Starting Cloud Dashboard on :%s", port)
 	log.Printf("Dashboard: http://localhost:%s", port)
 	log.Printf("Default login: %s / %s", cd.dashboardUser, cd.dashboardPass)
-	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, nil))
+	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, csrfMiddleware(mux)))
+}
+
+func (cd *CloudDashboard) dashboardHandler(w http.ResponseWriter, r *http.Request) {
+	tpl.Execute(w, map[string]interface{}{
+		"CSRFToken": csrf.Token(r),
+	})
+}
+
+func (cd *CloudDashboard) cleanupExpiredSessions(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		<-ticker.C
+		cd.sessionsMu.Lock()
+		for sessionID, creationTime := range cd.sessions {
+			if time.Since(creationTime) > 24*time.Hour {
+				delete(cd.sessions, sessionID)
+			}
+		}
+		cd.sessionsMu.Unlock()
+		log.Println("Cleaned up expired sessions.")
+	}
 }
 
 // Authentication middleware

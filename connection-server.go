@@ -54,9 +54,24 @@ type Snapshot struct {
 }
 
 type Command struct {
-	Type    string                 `json:"type"`
-	Payload map[string]interface{} `json:"payload"`
-	ID      string                 `json:"id"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+	ID      string          `json:"id"`
+}
+
+// Payloads for specific commands for type-safe unmarshaling
+type FlattenAccountPayload struct {
+	Account string `json:"account"`
+}
+
+type ClosePositionPayload struct {
+	Account    string `json:"account"`
+	Instrument string `json:"instrument"`
+}
+
+type CancelOrderPayload struct {
+	Account string `json:"account"`
+	OrderId string `json:"orderId"`
 }
 
 type ConnectionServer struct {
@@ -328,16 +343,23 @@ func (cs *ConnectionServer) executeCommand(cmd Command) error {
 	case "flatten_all":
 		return cs.writeOIF("FLATTENEVERYTHING;;;;;;;;;;;;")
 	case "flatten_account":
-		account := cmd.Payload["account"].(string)
-		return cs.writeOIF(fmt.Sprintf("FLATTENEVERYTHING;ACCOUNT=%s;;;;;;;;;;;", account))
+		var p FlattenAccountPayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			return fmt.Errorf("failed to unmarshal flatten_account payload: %w", err)
+		}
+		return cs.writeOIF(fmt.Sprintf("FLATTENEVERYTHING;ACCOUNT=%s;;;;;;;;;;;", p.Account))
 	case "close_position":
-		account := cmd.Payload["account"].(string)
-		instrument := cmd.Payload["instrument"].(string)
-		return cs.writeOIF(fmt.Sprintf("CLOSEPOSITION;ACCOUNT=%s;INSTRUMENT=%s;;;;;;;;;;", account, instrument))
+		var p ClosePositionPayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			return fmt.Errorf("failed to unmarshal close_position payload: %w", err)
+		}
+		return cs.writeOIF(fmt.Sprintf("CLOSEPOSITION;ACCOUNT=%s;INSTRUMENT=%s;;;;;;;;;;", p.Account, p.Instrument))
 	case "cancel_order":
-		account := cmd.Payload["account"].(string)
-		orderID := cmd.Payload["orderId"].(string)
-		return cs.writeOIF(fmt.Sprintf("CANCEL;ACCOUNT=%s;ORDERID=%s;;;;;;;;;;", account, orderID))
+		var p CancelOrderPayload
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			return fmt.Errorf("failed to unmarshal cancel_order payload: %w", err)
+		}
+		return cs.writeOIF(fmt.Sprintf("CANCEL;ACCOUNT=%s;ORDERID=%s;;;;;;;;;;", p.Account, p.OrderId))
 	default:
 		return fmt.Errorf("unknown command type: %s", cmd.Type)
 	}
@@ -350,6 +372,7 @@ func (cs *ConnectionServer) writeOIF(line string) error {
 }
 
 func main() {
+	rand.Seed(time.Now().UnixNano())
 	server := NewConnectionServer()
 	server.Start()
 }
