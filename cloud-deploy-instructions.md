@@ -5,9 +5,9 @@
 Your Google Cloud project needs these APIs enabled:
 
 1. **Enable Required APIs**: Visit these URLs and enable the APIs:
-   - Cloud Run API: https://console.developers.google.com/apis/api/run.googleapis.com/overview?project=n8n-gemini-cli-1
-   - Artifact Registry API: https://console.developers.google.com/apis/api/artifactregistry.googleapis.com/overview?project=n8n-gemini-cli-1
-   - Cloud Build API: https://console.developers.google.com/apis/api/cloudbuild.googleapis.com/overview?project=n8n-gemini-cli-1
+   - Cloud Run API: https://console.developers.google.com/apis/api/run.googleapis.com/overview?project=golden-plateau-468017-d6
+   - Artifact Registry API: https://console.developers.google.com/apis/api/artifactregistry.googleapis.com/overview?project=golden-plateau-468017-d6
+   - Cloud Build API: https://console.developers.google.com/apis/api/cloudbuild.googleapis.com/overview?project=golden-plateau-468017-d6
 
 ## Automated Deployment
 
@@ -61,16 +61,16 @@ If the automated deployment doesn't work:
 gcloud auth configure-docker
 
 # Build image
-docker build -f Dockerfile.zerotier -t gcr.io/n8n-gemini-cli-1/ninjamonitor-zerotier .
+docker build -f Dockerfile.zerotier -t gcr.io/golden-plateau-468017-d6/ninjamonitor-zerotier .
 
 # Push to registry
-docker push gcr.io/n8n-gemini-cli-1/ninjamonitor-zerotier
+docker push gcr.io/golden-plateau-468017-d6/ninjamonitor-zerotier
 ```
 
 ### 2. Deploy to Cloud Run
 ```bash
 gcloud run deploy ninjamonitor-dashboard \
-  --image gcr.io/n8n-gemini-cli-1/ninjamonitor-zerotier \
+  --image gcr.io/golden-plateau-468017-d6/ninjamonitor-zerotier \
   --platform managed \
   --region us-central1 \
   --port 8081 \
@@ -112,7 +112,7 @@ docker run -d \
   --network host \
   --privileged \
   -e ZEROTIER_NETWORK_ID=93afae59631a6798 \
-  gcr.io/n8n-gemini-cli-1/ninjamonitor-zerotier
+  gcr.io/golden-plateau-468017-d6/ninjamonitor-zerotier
 ```
 
 ## Testing the Deployment

@@ -17,7 +17,7 @@ spec:
       serviceAccountName: ninjamonitor-sa
       containers:
       - name: dashboard
-        image: gcr.io/PROJECT_ID/ninjamonitor-zerotier:latest
+        image: gcr.io/golden-plateau-468017-d6/ninjamonitor-zerotier:latest
         ports:
         - containerPort: 8081
           protocol: TCP
