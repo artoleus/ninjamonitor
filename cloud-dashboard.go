@@ -71,7 +71,7 @@ type CloudDashboard struct {
 	// Authentication
 	dashboardUser   string
 	dashboardPass   string
-	apiKey          string
+	apiSecretToken  string
 	sessions        map[string]time.Time
 	sessionsMu      sync.Mutex
 }
@@ -301,11 +301,11 @@ func NewCloudDashboard() *CloudDashboard {
 	if dashPass == "" {
 		dashPass = "ninja123" // Default password - change this!
 	}
-	apiKey := os.Getenv("API_KEY")
-	if apiKey == "" {
-		apiKey = generateRandomKey()
-		log.Printf("Generated API Key: %s", apiKey)
-		log.Printf("Set API_KEY environment variable to: %s", apiKey)
+	apiSecretToken := os.Getenv("API_SECRET_TOKEN")
+	if apiSecretToken == "" {
+		apiSecretToken = generateRandomKey()
+		log.Printf("Generated API Secret Token: %s", apiSecretToken)
+		log.Printf("Set API_SECRET_TOKEN environment variable to this value for the connection-server.")
 	}
 
 	return &CloudDashboard{
@@ -315,7 +315,7 @@ func NewCloudDashboard() *CloudDashboard {
 		sessions:      make(map[string]time.Time),
 		dashboardUser: dashUser,
 		dashboardPass: dashPass,
-		apiKey:        apiKey,
+		apiSecretToken: apiSecretToken,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // Allow all origins
@@ -451,10 +451,11 @@ func (cd *CloudDashboard) logoutHandler(w http.ResponseWriter, r *http.Request) 
 
 func (cd *CloudDashboard) websocketHandler(w http.ResponseWriter, r *http.Request) {
 	// Check API key for WebSocket connections (connection servers)
-	apiKey := r.Header.Get("Authorization")
-	expectedAuth := "Bearer " + cd.apiKey
-	if subtle.ConstantTimeCompare([]byte(apiKey), []byte(expectedAuth)) != 1 {
-		log.Printf("WebSocket unauthorized: expected %s, got %s", expectedAuth, apiKey)
+	authHeader := r.Header.Get("Authorization")
+	expectedHeader := "Bearer " + cd.apiSecretToken
+	if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedHeader)) != 1 {
+		// To prevent token leakage, log a generic unauthorized message.
+		log.Printf("WebSocket unauthorized: Invalid token.")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
