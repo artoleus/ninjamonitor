@@ -122,7 +122,7 @@ body.dark-mode .table-success-custom { background-color: rgba(25, 135, 84, 0.3) 
 <body>
 <div class="container py-4">
     <div class="d-flex justify-content-between align-items-center">
-        <h3>NinjaTrader Cloud Dashboard</h3>
+        <h3>NinjaTrader Cloud Dashboard (Railway)</h3>
         <div class="form-check form-switch"><input class="form-check-input" type="checkbox" role="switch" id="darkModeToggle"><label class="form-check-label" for="darkModeToggle">Dark Mode</label></div>
     </div>
     <div id="accounts" class="mt-3"></div>
