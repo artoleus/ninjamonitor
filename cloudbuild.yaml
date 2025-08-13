@@ -1,0 +1,8 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-f', 'Dockerfile.zerotier', '-t', 'gcr.io/n8n-gemini-cli-1/ninjamonitor-zerotier', '.']
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'gcr.io/n8n-gemini-cli-1/ninjamonitor-zerotier']
+images:
+- 'gcr.io/n8n-gemini-cli-1/ninjamonitor-zerotier'
+timeout: '600s'

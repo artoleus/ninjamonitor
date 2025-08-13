@@ -1,0 +1,46 @@
+# Dockerfile.zerotier - Cloud dashboard with ZeroTier support
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cloud-dashboard.go .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o cloud-dashboard cloud-dashboard.go
+
+FROM alpine:latest
+
+# Install required packages for ZeroTier
+RUN apk add --no-cache \
+    curl \
+    bash \
+    ca-certificates \
+    iptables \
+    ip6tables \
+    net-tools \
+    procps \
+    && rm -rf /var/cache/apk/*
+
+# Install ZeroTier
+RUN curl -s https://install.zerotier.com | sh
+
+WORKDIR /app
+
+# Copy binary and scripts
+COPY --from=builder /app/cloud-dashboard .
+COPY start-with-zerotier.sh .
+RUN chmod +x start-with-zerotier.sh cloud-dashboard
+
+# Create directory for ZeroTier
+RUN mkdir -p /var/lib/zerotier-one
+
+# Expose port
+EXPOSE 8081
+
+# Environment variables
+ENV PORT=8081
+ENV BIND_ADDRESS=0.0.0.0
+ENV ZEROTIER_NETWORK_ID=93afae59631a6798
+
+# Run with ZeroTier (requires privileged mode)
+CMD ["./start-with-zerotier.sh"]

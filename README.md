@@ -4,10 +4,18 @@ A distributed trading monitoring system with cloud dashboard and local NinjaTrad
 
 ## Architecture
 
+### Standard Internet Connection
 ```
 NinjaTrader AddOn → Connection Server (Local) → Cloud Dashboard → Web Clients
                          ↓                            ↑
                     OIF Commands                 WebSocket/HTTP
+```
+
+### ZeroTier Secure Network (Recommended)
+```
+NinjaTrader AddOn → Connection Server (Local) ←──ZeroTier Network──→ Cloud Dashboard → Web Clients
+                         ↓                         (Encrypted Tunnel)        ↑
+                    OIF Commands                                        WebSocket/HTTP
 ```
 
 ## Components
@@ -53,20 +61,51 @@ NinjaTrader AddOn → Connection Server (Local) → Cloud Dashboard → Web Clie
 
 ### Production Deployment
 
-#### Connection Server (Local)
+#### Option A: Standard Internet (Less Secure)
+**Connection Server (Local)**
 1. Build binary: `go build -o connection-server connection-server.go`
 2. Set environment variables:
    - `CLOUD_URL`: WebSocket URL of cloud dashboard
    - `NT_INCOMING`: NinjaTrader incoming folder path
-3. Run as Windows service or background process
+3. Configure firewall/port forwarding for external access
 
-#### Cloud Dashboard
+**Cloud Dashboard**
 1. Deploy to Google Cloud Run:
    ```bash
    gcloud run deploy ninjamonitor --source . --platform managed
    ```
-2. Set environment variables in cloud platform
-3. Configure SSL/TLS for WebSocket connections
+2. Configure SSL/TLS for WebSocket connections
+
+#### Option B: ZeroTier Network (Recommended)
+**Setup ZeroTier Network**
+1. Create network at [ZeroTier Central](https://my.zerotier.com)
+2. Note your Network ID
+3. Configure as private network with custom subnet
+
+**Connection Server (Local)**
+```bash
+# Install ZeroTier and join network
+zerotier-cli join YOUR_NETWORK_ID
+
+# Set environment variables
+CLOUD_URL=ws://[ZT-CLOUD-IP]:8081/ws
+NT_INCOMING=C:\Users\...\Documents\NinjaTrader 8\incoming
+
+# Run connection server
+./connection-server.exe
+```
+
+**Cloud Dashboard (VPS/Dedicated Server)**
+```bash
+# Install ZeroTier and join network
+sudo zerotier-cli join YOUR_NETWORK_ID
+
+# Build and run with ZeroTier support
+docker build -f Dockerfile.zerotier -t ninjamonitor-zt .
+docker run --privileged --env ZEROTIER_NETWORK_ID=YOUR_NETWORK_ID ninjamonitor-zt
+```
+
+See `zerotier-config.md` for detailed setup instructions.
 
 #### NinjaTrader AddOn
 1. Update `endpointUrl` in TradeBroadcasterAddOn.cs:

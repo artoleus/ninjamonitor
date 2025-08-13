@@ -1,0 +1,52 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ninjamonitor-dashboard
+  annotations:
+    run.googleapis.com/cpu-throttling: "false"
+    run.googleapis.com/execution-environment: gen2
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/container-dependencies: '{"dashboard":["zerotier"]}'
+    spec:
+      containerConcurrency: 100
+      timeoutSeconds: 3600
+      serviceAccountName: ninjamonitor-sa
+      containers:
+      - name: dashboard
+        image: gcr.io/PROJECT_ID/ninjamonitor-zerotier:latest
+        ports:
+        - containerPort: 8081
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "8081"
+        - name: BIND_ADDRESS
+          value: "0.0.0.0"
+        - name: ZEROTIER_NETWORK_ID
+          value: "93afae59631a6798"
+        resources:
+          limits:
+            cpu: 2
+            memory: 1Gi
+          requests:
+            cpu: 1
+            memory: 512Mi
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+            - NET_ADMIN
+            - SYS_ADMIN
+        volumeMounts:
+        - name: zt-data
+          mountPath: /var/lib/zerotier-one
+      volumes:
+      - name: zt-data
+        emptyDir: {}
+  traffic:
+  - percent: 100
+    latestRevision: true
